@@ -17,10 +17,11 @@ def as_signed_le(bs):
     return result
 
 def get_attribute_type(identifier):
-    dic = {16:'$STANDARD_INFORMATION',48:'$FILE_NAME',128:'$DATA', 32:'$ATTRIBUTE_LIST', \
-    64:'$OBJECT_ID',192:'$REPARSE_POINT',144:'$INDEX_ROOT',160:'$INDEX_ALLOCATION', \
-    176:'$BITMAP'}
-    return dic[identifier]
+    dic = {16:('$STANDARD_INFORMATION','(16-0)'),48:('$FILE_NAME','48-3'),128:('$DATA','(128-2)')}
+    if identifier in dic:
+        return dic[identifier]
+    else:
+        return None
 
 def get_sector_size(f):
     boot_sector = get_boot_sector(f)
@@ -63,9 +64,6 @@ def get_entry(f,address):
     get_mft_address(f)+address*get_mft_entry_size(f)+get_mft_entry_size(f)]
     return entry_bytes
 
-def get_attribute(entry_bytes,offset):
-    return entry_bytes[offset:]
-
 def get_attr_flag(flag):
     dic = {0x0001:'Read Only',0x0002:'Hidden',0x0004:'System',0x0020:'Archive',\
     0x0040:'Device',0x0080:'#Normal',0x0100:'Temporary',0x0200:'Sparse file',\
@@ -73,43 +71,54 @@ def get_attr_flag(flag):
     0x2000:'Content is not being indexed for faster searches',0x4000:'Encrypted'}
     return dic[as_signed_le(flag)]
 
-def parse_standard_info(content):
+def parse_standard_info(content,attr_identifier):
     flags = get_attr_flag(content[32:36])
-    print('Flags: {}'.format(flags))
+    info_list = []
+    info_list.append('{} Attribute Values:'.format(attr_identifier))
+    info_list.append('Flags: {}'.format(flags))
     owner_id = 0
-    print('Owner ID: {}'.format(owner_id))
+    info_list.append('Owner ID: {}'.format(owner_id))
     create_time = into_localtime_string(as_signed_le(content[:8]))
     modified_time = into_localtime_string(as_signed_le(content[8:16]))
     mft_modified_time = into_localtime_string(as_signed_le(content[16:24]))
     accessed_time = into_localtime_string(as_signed_le(content[24:32]))
-    print('Created:    {}'.format(create_time))
-    print('File Modified:  {}'.format(modified_time))
-    print('MFT Modified:   {}'.format(mft_modified_time))
-    print('Accessed:   {}'.format(accessed_time))
+    info_list.append('Created:	{}'.format(create_time))
+    info_list.append('File Modified:	{}'.format(modified_time))
+    info_list.append('MFT Modified:	{}'.format(mft_modified_time))
+    info_list.append('Accessed:	{}\n'.format(accessed_time))
+    info_list.append('')
+    return info_list
 
-def parse_file_name(content):
+def parse_file_name(content,attr_identifier):
     flags = get_attr_flag(content[56:60])
+    info_list = []
     name = content[66:].decode('ascii').strip()
     parent_mft_entry = as_signed_le(content[0:6])
     sequence_number = as_signed_le(content[6:8])
     allocated_size = as_signed_le(content[40:48])
     actual_size = as_signed_le(content[48:56])
-    print('Flags: {}'.format(flags))
-    print('Name: {}'.format(name))
-    print('Parent MFT Entry: {}     Sequence: {}'.format(parent_mft_entry,sequence_number))
-    print('Allocated Size: {}      Actual Size: {}'.format(allocated_size,actual_size))
+    info_list.append('{} Attribute Values:'.format(attr_identifier))
+    info_list.append('Flags: {}'.format(flags))
+    info_list.append('Name: {}'.format(name))
+    info_list.append('Parent MFT Entry: {}     Sequence: {}'.format(parent_mft_entry,sequence_number))
+    info_list.append('Allocated Size: {}      Actual Size: {}'.format(allocated_size,actual_size))
     create_time = into_localtime_string(as_signed_le(content[8:16]))
     modified_time = into_localtime_string(as_signed_le(content[16:24]))
     mft_modified_time = into_localtime_string(as_signed_le(content[24:32]))
     accessed_time = into_localtime_string(as_signed_le(content[32:40]))
-    print('Created:    {}'.format(create_time))
-    print('File Modified:  {}'.format(modified_time))
-    print('MFT Modified:   {}'.format(mft_modified_time))
-    print('Accessed:   {}'.format(accessed_time))
+    info_list.append('Created:	{}'.format(create_time))
+    info_list.append('File Modified:	{}'.format(modified_time))
+    info_list.append('MFT Modified:	{}'.format(mft_modified_time))
+    info_list.append('Accessed:	{}'.format(accessed_time))
+    info_list.append('')
+    return info_list
 
+def parse_data_attr(content):
+    pass
 
 def istat_ntfs(f, address, sector_size=512, offset=0):
     data = f.read()
+    info_list = []
     # print('Bytes Per Sector {}'.format(get_sector_size(data)))
     # print('Sector per Cluster {}'.format(get_sector_per_cluster(data)))
     # print('Cluster Size {}'.format(get_cluster_size(data)))
@@ -120,39 +129,46 @@ def istat_ntfs(f, address, sector_size=512, offset=0):
     log_file_sequence_num = as_signed_le(entry_bytes[8:16])
     sequence_value = as_signed_le(entry_bytes[16:18])
     link_count = as_signed_le(entry_bytes[18:20])
-    print('MFT Entry Header Values:')
-    print('Entry: {}        Sequence: {}'.format(address,sequence_value))
-    print('$LogFile Sequence Number: {}'.format(log_file_sequence_num))
-    print('Allocated File')
-    print('Links: {}'.format(link_count))
+    info_list.append('MFT Entry Header Values:')
+    info_list.append('Entry: {}        Sequence: {}'.format(address,sequence_value))
+    info_list.append('$LogFile Sequence Number: {}'.format(log_file_sequence_num))
+    info_list.append('Allocated File')
+    info_list.append('Links: {}'.format(link_count))
+    info_list.append('')
     attr_offset = as_signed_le(entry_bytes[20:22])
     # print('Offset is {}'.format(attr_offset))
-    attr_bytes = get_attribute(entry_bytes,attr_offset)
-    attr_index = 0
+    attr_list = []
     while True:
-        attr_header = attr_bytes[attr_index:attr_index+16]
+        # print(attr_offset)
+        attr_header = entry_bytes[attr_offset:attr_offset+16]
+        # print(attr_header.hex())
+        if attr_header[:4] == b'\xff\xff\xff\xff':
+            break
         attr_size = as_signed_le(attr_header[4:8])
         # print(hex(attr_size))
-        if attr_size == 0xffffffff:
-            break
         attr_identifier = get_attribute_type(as_signed_le(attr_header[:4]))
-        print('{} Attribute Values:'.format(attr_identifier))
-        name_len = as_signed_le(attr_header[9:10])
-        non_resident_flag = 'Resident' if as_signed_le(attr_header[8:9])==0 else 'Non-resident'
-        attr = attr_bytes[attr_index:attr_index+attr_size]
-        content_size = as_signed_le(attr[16:20]) if non_resident_flag=='Resident' else as_signed_le(attr[48:56])
-        content_offset = as_signed_le(attr[20:22])
-        # print('Name {}'.format(name_len))
-        # print(non_resident_flag)
-        # print('Size {}'.format(content_size))
-        # print('Offset to Content {}'.format(content_offset))
-        content = attr[content_offset:content_offset+content_size]
-        if attr_identifier == '$STANDARD_INFORMATION':
-            parse_standard_info(content)
-        elif attr_identifier == '$FILE_NAME':
-            parse_file_name(content)
-        print('\n')
-        attr_index += attr_size
+        if attr_identifier != None:
+            name_len = as_signed_le(attr_header[9:10])
+            non_resident_flag = 'Resident' if as_signed_le(attr_header[8:9])==0 else 'Non-resident'
+            attr = entry_bytes[attr_offset:attr_offset+attr_size]
+            content_size = as_signed_le(attr[16:20]) if non_resident_flag=='Resident' else as_signed_le(attr[48:56])
+            attr_str = 'Type: {} {}   Name: N/A   {}   size: {}'.format(attr_identifier[0],\
+            attr_identifier[1],non_resident_flag,content_size)
+            attr_list.append(attr_str)
+            content_offset = as_signed_le(attr[20:22])
+            # print('Name {}'.format(name_len))
+            # print(non_resident_flag)
+            # print('Size {}'.format(content_size))
+            # print('Offset to Content {}'.format(content_offset))
+            content = attr[content_offset:content_offset+content_size]
+            if attr_identifier[0] == '$STANDARD_INFORMATION':
+                info_list.extend(parse_standard_info(content,attr_identifier[0]))
+            elif attr_identifier[0] == '$FILE_NAME':
+                info_list.extend(parse_file_name(content,attr_identifier[0]))
+        attr_offset += attr_size
+    info_list.append('Attributes:')
+    info_list.extend(attr_list)
+    return info_list
 
 
 def into_localtime_string(windows_timestamp):
