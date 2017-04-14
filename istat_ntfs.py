@@ -17,7 +17,7 @@ def as_signed_le(bs):
     return result
 
 def get_attribute_type(identifier):
-    dic = {16:('$STANDARD_INFORMATION','(16-0)'),48:('$FILE_NAME','48-3'),128:('$DATA','(128-2)')}
+    dic = {16:('$STANDARD_INFORMATION','(16-0)'),48:('$FILE_NAME','(48-3)'),128:('$DATA','(128-2)')}
     if identifier in dic:
         return dic[identifier]
     else:
@@ -92,7 +92,7 @@ def parse_standard_info(content,attr_identifier):
 def parse_file_name(content,attr_identifier):
     flags = get_attr_flag(content[56:60])
     info_list = []
-    name = content[66:].decode('ascii').strip()
+    name = content[66:].decode('utf-16le').strip()
     parent_mft_entry = as_signed_le(content[0:6])
     sequence_number = as_signed_le(content[6:8])
     allocated_size = as_signed_le(content[40:48])
@@ -100,8 +100,8 @@ def parse_file_name(content,attr_identifier):
     info_list.append('{} Attribute Values:'.format(attr_identifier))
     info_list.append('Flags: {}'.format(flags))
     info_list.append('Name: {}'.format(name))
-    info_list.append('Parent MFT Entry: {}     Sequence: {}'.format(parent_mft_entry,sequence_number))
-    info_list.append('Allocated Size: {}      Actual Size: {}'.format(allocated_size,actual_size))
+    info_list.append('Parent MFT Entry: {} \tSequence: {}'.format(parent_mft_entry,sequence_number))
+    info_list.append('Allocated Size: {}   \tActual Size: {}'.format(allocated_size,actual_size))
     create_time = into_localtime_string(as_signed_le(content[8:16]))
     modified_time = into_localtime_string(as_signed_le(content[16:24]))
     mft_modified_time = into_localtime_string(as_signed_le(content[24:32]))
@@ -113,10 +113,46 @@ def parse_file_name(content,attr_identifier):
     info_list.append('')
     return info_list
 
-def parse_data_attr(content):
-    pass
+def parse_data_attr(f,attr_bytes):
+    # print(get_attribute_type(as_signed_le(attr_bytes[:4])))
+    start_vcn = as_signed_le(attr_bytes[16:24])
+    end_vcn = as_signed_le(attr_bytes[24:32])
+    # print(end_vcn)
+    runlist_offset = as_signed_le(attr_bytes[32:34])
+    run_header_value = attr_bytes[runlist_offset]
+    length_mask = 0x0f
+    previous_cluster = 0
+    info_list = []
+    while run_header_value != 0:
+        temp_run_offset = as_signed_le(bytes([run_header_value>>4]))
+        temp_run_length = as_signed_le(bytes([run_header_value&length_mask]))
+        runlist_offset += 1
+        cluster_run_length = as_signed_le(attr_bytes[runlist_offset:runlist_offset+temp_run_length])
+        cluster_offset = as_signed_le(attr_bytes[runlist_offset+temp_run_length:\
+        runlist_offset+temp_run_length+temp_run_offset])
+        current_cluster = previous_cluster + cluster_offset
+        for i in range(0,cluster_run_length):
+            info_list.append(current_cluster+i)
+        previous_cluster = current_cluster
+        runlist_offset += temp_run_length+temp_run_offset
+        run_header_value = attr_bytes[runlist_offset]
+    temp = ''
+    count = 0
+    str_list = []
+    for i in range(0,len(info_list)):
+        # print(info_list[i])
+        if count == 8:
+            str_list.append(temp)
+            temp = str(info_list[i])+' '
+            count = 1
+        else:
+            temp += str(info_list[i])+' '
+            count += 1
+    str_list.append(temp)
+    return str_list
 
 def istat_ntfs(f, address, sector_size=512, offset=0):
+    f.seek(offset)
     data = f.read()
     info_list = []
     # print('Bytes Per Sector {}'.format(get_sector_size(data)))
@@ -139,7 +175,7 @@ def istat_ntfs(f, address, sector_size=512, offset=0):
     # print('Offset is {}'.format(attr_offset))
     attr_list = []
     while True:
-        # print(attr_offset)
+        # print(attr_offset)\
         attr_header = entry_bytes[attr_offset:attr_offset+16]
         # print(attr_header.hex())
         if attr_header[:4] == b'\xff\xff\xff\xff':
@@ -149,11 +185,13 @@ def istat_ntfs(f, address, sector_size=512, offset=0):
         attr_identifier = get_attribute_type(as_signed_le(attr_header[:4]))
         if attr_identifier != None:
             name_len = as_signed_le(attr_header[9:10])
-            non_resident_flag = 'Resident' if as_signed_le(attr_header[8:9])==0 else 'Non-resident'
+            non_resident_flag = 'Resident' if as_signed_le(attr_header[8:9])==0 else 'Non-Resident'
             attr = entry_bytes[attr_offset:attr_offset+attr_size]
             content_size = as_signed_le(attr[16:20]) if non_resident_flag=='Resident' else as_signed_le(attr[48:56])
             attr_str = 'Type: {} {}   Name: N/A   {}   size: {}'.format(attr_identifier[0],\
-            attr_identifier[1],non_resident_flag,content_size)
+            attr_identifier[1],non_resident_flag,content_size) if non_resident_flag=='Resident' else \
+            'Type: {} {}   Name: N/A   {}   size: {}  init_size: {}'.format(attr_identifier[0],\
+            attr_identifier[1],non_resident_flag,content_size,as_signed_le(attr[56:64]))
             attr_list.append(attr_str)
             content_offset = as_signed_le(attr[20:22])
             # print('Name {}'.format(name_len))
@@ -165,6 +203,9 @@ def istat_ntfs(f, address, sector_size=512, offset=0):
                 info_list.extend(parse_standard_info(content,attr_identifier[0]))
             elif attr_identifier[0] == '$FILE_NAME':
                 info_list.extend(parse_file_name(content,attr_identifier[0]))
+            else:
+                if non_resident_flag == 'Non-Resident':
+                    attr_list.extend(parse_data_attr(data,content))
         attr_offset += attr_size
     info_list.append('Attributes:')
     info_list.extend(attr_list)
@@ -201,3 +242,4 @@ if __name__ == '__main__':
         result = istat_ntfs(f, args.address, args.b, args.o)
         for line in result:
             print(line.strip())
+            pass
